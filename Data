@@ -1,0 +1,10 @@
+## Data
+
+This analysis uses publicly available proteomics data from: Kjærgaard et al., Cell 2025 (https://doi.org/10.1016/j.cell.2025.05.005)
+
+Download the following files from the original repository and place them
+in a `data/` folder before running the script:
+- corrected_prot.rds
+- Sample_ID_prot.rds
+
+https://github.com/fpm-cbmr/KI_study_JKL/tree/master/data
