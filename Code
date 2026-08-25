@@ -37,9 +37,3 @@ results$gene <- gene_names[mito_mask]
 # 6 Multiple testing correction within the OXPHOS panel
 results$adj.P.Val <- p.adjust(results$P.Value, method = "BH")
 results <- results[order(results$P.Value), ]
- 
-# 7. Export
-write.csv(results[, c("gene", "logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "B")],
-          "limma_results_t2d_corrected.csv", row.names = FALSE)
- 
-cat("Proteins tested:", nrow(results), "| FDR < 0.05:", sum(results$adj.P.Val < 0.05), "\n")
