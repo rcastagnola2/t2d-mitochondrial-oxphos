@@ -1,80 +1,45 @@
-%Mitochondrial OXPHOS proteins in type 2 diabetes: skeletal muscle re-analysis Data: Kjaergaard et al., Cell 2025 (https://doi.org/10.1016/j.cell.2025.05.005)
+# Mitochondrial OXPHOS protein abundance in T2D skeletal muscle
+# Differential expression analysis (limma) -- NGT vs T2D, baseline (Pre) samples
+# Data: Kjaergaard et al., Cell 2025 (https://doi.org/10.1016/j.cell.2025.05.005)
 
-GREY, MAROON, MAROON_DARK = "#C4C4C4", "#9C3E3E", "#7A2E2E"
-COMPLEX_ORDER = ["CI", "CII", "CIII", "CIV", "CV"]
-COMPLEX_FULL = {"CI": "Complex I", "CII": "Complex II", "CIII": "Complex III",
-               "CIV": "Complex IV", "CV": "Complex V"}
  
-%load data
-prot = pyreadr.read_r("corrected_prot.rds")[None]
-meta = pyreadr.read_r("Sample_ID_prot.rds")[None]
-mito = pd.read_csv("mito_oxphos_genes_clean.csv")
+library(limma)
  
-% match mitochondrial genes
-prot_gene = prot.index.to_series().str.split("_").str[0].str.split(";").str[0]
-mito_prot = prot[prot_gene.isin(mito["gene"]).values].copy()
-mito_prot.index = prot_gene[prot_gene.isin(mito["gene"]).values].values
+#1. Load data
+prot       <- readRDS("corrected_prot.rds")            # full proteome (proteins x samples)
+meta       <- readRDS("Sample_ID_prot.rds")             # sample metadata
+mito_genes <- read.csv("mito_oxphos_genes_clean.csv")    # target OXPHOS gene panel
  
-meta_idx = meta.set_index(meta["New_SA_ID"].astype(str))
-pre_ids = [c for c in meta_idx[meta_idx["Clamp"] == "Pre"].index if c in mito_prot.columns]
-mito_pre = mito_prot[pre_ids]
-disease_pre = meta_idx.loc[pre_ids, "disease"]
+# 2 Restrict to baseline (Pre) samples
+meta$New_SA_ID <- as.character(meta$New_SA_ID)
+pre_ids  <- intersect(meta$New_SA_ID[meta$Clamp == "Pre"], colnames(prot))
+prot_pre <- prot[, pre_ids]
+meta_pre <- meta[match(pre_ids, meta$New_SA_ID), ]
  
-%NGT vs T2D (adjusted for sex)
-rows = []
-for gene in mito_pre.index.unique():
-    sub = mito_pre.loc[gene]
-    sub = sub.iloc[0] if isinstance(sub, pd.DataFrame) else sub
-    df_g = pd.DataFrame({
-        "expr": sub.values,
-        "disease": disease_pre.loc[sub.index].values,
-        "sex": meta_idx.loc[sub.index, "Gender"].values,
-    }).dropna()
-    if df_g["disease"].nunique() < 2 or len(df_g) < 8:
-        continue
-    model = smf.ols("expr ~ C(disease) + C(sex)", data=df_g).fit()
-    tab = anova_lm(model, typ=2)
-    rows.append({"gene": gene, "p": tab.loc["C(disease)", "PR(>F)"]})
+#3 Design matrix: disease adjusted for sex 
+disease <- factor(meta_pre$disease, levels = c("NGT", "T2D"))
+sex     <- factor(meta_pre$Gender, levels = c("Male", "Female"))
+design  <- model.matrix(~ disease + sex)
+colnames(design) <- c("Intercept", "Disease_T2D", "Sex_Female")
  
-res = pd.DataFrame(rows).sort_values("p")
-res["FDR"] = multipletests(res["p"], method="fdr_bh")[1]
-res = res.merge(mito, on="gene", how="left")
+#4 Fit on the full proteome, then moderate variance (eBayes) 
+fit <- eBayes(lmFit(prot_pre, design))
+results_all <- topTable(fit, coef = "Disease_T2D", number = Inf, sort.by = "none")
  
-# direction of effect (NGT - T2D)
-ngt_ids = disease_pre[disease_pre == "NGT"].index
-t2d_ids = disease_pre[disease_pre == "T2D"].index
-res["diff"] = res["gene"].map(mito_pre[ngt_ids].mean(axis=1) - mito_pre[t2d_ids].mean(axis=1))
+# 5 Restrict to the OXPHOS/mitochondrial panel
+gene_names <- sapply(strsplit(rownames(prot_pre), "_"), function(x) x[1])
+gene_names <- sapply(strsplit(gene_names, ";"), function(x) x[1])
+mito_mask  <- gene_names %in% mito_genes$gene
  
-print(f"Proteins tested: {len(res)} | FDR<0.05: {(res['FDR'] < 0.05).sum()}")
+results <- results_all[mito_mask, ]
+results$gene <- gene_names[mito_mask]
  
-%Summary numbers per complex (used to generate Figure 1, made with AI)
-summary = res.groupby("complex").agg(
-    n_tested=("gene", "count"), n_sig=("FDR", lambda x: (x < 0.05).sum())
-).reindex(COMPLEX_ORDER)
-summary["pct_sig"] = 100 * summary["n_sig"] / summary["n_tested"]
-print(summary)
+# 6 Multiple testing correction within the OXPHOS panel
+results$adj.P.Val <- p.adjust(results$P.Value, method = "BH")
+results <- results[order(results$P.Value), ]
  
-%Figure 2 
-res["neglog10p"] = -np.log10(res["p"])
-sig = res["FDR"] < 0.05
-fig, ax = plt.subplots(figsize=(6, 5))
-ax.scatter(res.loc[~sig, "diff"], res.loc[~sig, "neglog10p"], color=GREY,
-          edgecolor="black", linewidth=0.4, s=45, alpha=0.85, zorder=2, label="Not significant")
-ax.scatter(res.loc[sig, "diff"], res.loc[sig, "neglog10p"], color=MAROON,
-          edgecolor="black", linewidth=0.5, s=60, alpha=0.95, zorder=3, label="FDR < 0.05")
-ax.axhline(-np.log10(0.05), color="grey", linestyle="--", linewidth=0.7, zorder=1)
-for _, row in res[sig].iterrows():
-    ax.annotate(row["gene"], (row["diff"], row["neglog10p"]), fontsize=8,
-               xytext=(4, 4), textcoords="offset points", color=MAROON_DARK)
+# 7. Export
+write.csv(results[, c("gene", "logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "B")],
+          "limma_results_t2d_corrected.csv", row.names = FALSE)
  
-ax.set_xlabel("log2 fold change (NGT vs T2D)", fontsize=10, style="italic")
-ax.set_ylabel("-log10 (P value)", fontsize=10)
-ax.set_title("T2D is associated with reduced mitochondrial protein abundance in skeletal muscle",
-            fontsize=11, fontweight="bold")
-ax.legend(fontsize=8, loc="upper left", frameon=False)
-ax.spines[["top", "right"]].set_visible(False)
-fig.text(0.02, 0.02, "Figure 2", fontsize=9, color="black", ha="left", va="bottom")
-plt.tight_layout()
-plt.savefig("figure2.png", dpi=150, bbox_inches="tight")
- 
-print("Saved figure2.png")
+cat("Proteins tested:", nrow(results), "| FDR < 0.05:", sum(results$adj.P.Val < 0.05), "\n")
