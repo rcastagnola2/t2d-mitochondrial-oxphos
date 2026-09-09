@@ -2,38 +2,45 @@
 # Differential expression analysis (limma) -- NGT vs T2D, baseline (Pre) samples
 # Data: Kjaergaard et al., Cell 2025 (https://doi.org/10.1016/j.cell.2025.05.005)
 
- 
 library(limma)
- 
+
 #1. Load data
-prot       <- readRDS("corrected_prot.rds")            # full proteome (proteins x samples)
-meta       <- readRDS("Sample_ID_prot.rds")             # sample metadata
-mito_genes <- read.csv("mito_oxphos_genes_clean.csv")    # target OXPHOS gene panel
- 
-# 2 Restrict to baseline (Pre) samples
+prot      <- readRDS("corrected_prot.rds")          # full proteome (proteins x samples)
+meta      <- readRDS("Sample_ID_prot.rds")           # sample metadata
+mitocarta <- read.csv("mitocarta3_human.csv")        # MitoCarta3.0 gene panel
+
+#2. Restrict to baseline (Pre) samples, keep the full proteome
 meta$New_SA_ID <- as.character(meta$New_SA_ID)
 pre_ids  <- intersect(meta$New_SA_ID[meta$Clamp == "Pre"], colnames(prot))
 prot_pre <- prot[, pre_ids]
 meta_pre <- meta[match(pre_ids, meta$New_SA_ID), ]
- 
-#3 Design matrix: disease adjusted for sex 
+
+#3. Design matrix: disease status adjusted for sex
 disease <- factor(meta_pre$disease, levels = c("NGT", "T2D"))
 sex     <- factor(meta_pre$Gender, levels = c("Male", "Female"))
 design  <- model.matrix(~ disease + sex)
 colnames(design) <- c("Intercept", "Disease_T2D", "Sex_Female")
- 
-#4 Fit on the full proteome, then moderate variance (eBayes) 
+
+#4. Fit on the full proteome, then moderate variance (eBayes)
 fit <- eBayes(lmFit(prot_pre, design))
 results_all <- topTable(fit, coef = "Disease_T2D", number = Inf, sort.by = "none")
- 
-# 5 Restrict to the OXPHOS/mitochondrial panel
+
+#5. Restrict to the MitoCarta3.0 panel, AFTER model fitting
 gene_names <- sapply(strsplit(rownames(prot_pre), "_"), function(x) x[1])
 gene_names <- sapply(strsplit(gene_names, ";"), function(x) x[1])
-mito_mask  <- gene_names %in% mito_genes$gene
- 
+mito_mask  <- gene_names %in% mitocarta$gene
+
 results <- results_all[mito_mask, ]
 results$gene <- gene_names[mito_mask]
- 
-# 6 Multiple testing correction within the OXPHOS panel
+results <- merge(results, mitocarta[, c("gene", "sub_localization", "pathways")], by = "gene")
+
+#6. Multiple testing correction within the mitochondrial panel
 results$adj.P.Val <- p.adjust(results$P.Value, method = "BH")
 results <- results[order(results$P.Value), ]
+
+#7. Export
+write.csv(results[, c("gene", "logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "B",
+                       "sub_localization", "pathways")],
+          "limma_results_mitocarta_panel.csv", row.names = FALSE)
+
+cat("Proteins tested:", nrow(results), "| FDR < 0.05:", sum(results$adj.P.Val < 0.05), "\n")
